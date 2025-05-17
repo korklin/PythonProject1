@@ -14,7 +14,7 @@ def filter_by_state(data_base: list, state='EXECUTED') -> list:
     return new_data_base
 
 
-def sort_by_date(data_base: list, sort_by=False) -> list:
+def sort_by_date(data_base: list, sort_by=True) -> list:
     """
     Принимает список словарей и необязательный параметр, задающий порядок сортировки
     (по умолчанию — убывание). Функция должна возвращать новый список, отсортированный
@@ -22,6 +22,6 @@ def sort_by_date(data_base: list, sort_by=False) -> list:
     """
     sorted_date = []
     for data in data_base:
-        sorted_date = sorted(data_base, key=lambda data: data['date'], reverse=not sort_by)
+        sorted_date = sorted(data_base, key=lambda data: data['date'], reverse=sort_by)
     return sorted_date
 
