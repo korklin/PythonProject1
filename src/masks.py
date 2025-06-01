@@ -24,16 +24,18 @@ def get_mask_account(account_number: str) -> str:
     """
     Маскирует номер счёта, оставляя только последние 4 цифры.
     """
+    if account_number is None:
+        raise ValueError ('Номер счета не может быть None')
     # Удаляем все нецифровые символы (если есть)
-    cleaned_number = "".join(filter(str.isdigit, account_number))
+    cleaned_number = ''.join(filter(str.isdigit, account_number))
 
-    # Проверяем, что номер счёта валидный (минимум 4 цифры)
-    if len(cleaned_number) < 4:
-        raise ValueError("Номер счёта должен содержать минимум 4 цифры")
+    # Проверяем, что номер счёта валидный (минимум 20 цифр)
+    if len(cleaned_number) < 20:
+        raise ValueError('Номер счёта должен содержать минимум 20 цифр')
 
     # Получаем последние 4 цифры
     last_four = cleaned_number[-4:]
 
     # Формируем маскированный номер
-    masked_account = f"**{last_four}"
+    masked_account = f'**{last_four}'
     return masked_account
