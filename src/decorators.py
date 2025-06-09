@@ -1,10 +1,16 @@
 import datetime
+from functools import wraps
 from typing import Any, Callable, Optional, TypeVar, cast
 
+T = TypeVar("T")  # Обобщенный тип для возвращаемого значения
 
-def log(filename: Optional[str] = None) -> Callable[[Callable[..., TypeVar]], Callable[..., TypeVar]]:
-    def decorator(func: Callable[..., TypeVar]) -> Callable[..., TypeVar]:
-        def wrapper(*args: Any, **kwargs: Any) -> TypeVar:
+
+def log(filename: Optional[str] = None) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """Декоратор для логирования выполнения функций."""
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> T:
             current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             start_message = f"{current_time} - {func.__name__} started\n"
 
@@ -28,8 +34,7 @@ def log(filename: Optional[str] = None) -> Callable[[Callable[..., TypeVar]], Ca
 
             except Exception as e:
                 error_message = (
-                    f"{current_time} - {func.__name__} error: {type(e).__name__}. "
-                    f"Inputs: {args}, {kwargs}\n"
+                    f"{current_time} - {func.__name__} error: {type(e).__name__}. " f"Inputs: {args}, {kwargs}\n"
                 )
 
                 if filename:
@@ -37,9 +42,8 @@ def log(filename: Optional[str] = None) -> Callable[[Callable[..., TypeVar]], Ca
                         file.write(error_message)
                 else:
                     print(error_message, end="")
-
                 raise
 
-        return wrapper
+        return cast(Callable[..., T], wrapper)
 
     return decorator
