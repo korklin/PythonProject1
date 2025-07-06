@@ -19,13 +19,19 @@ def test_load_transactions_empty_file() -> None:
 
 @patch("src.utils.requests.get")
 def test_convert_to_rub_usd(mock_get: Mock) -> None:
-    mock_response = {"rates": {"RUB": 90.5}, "success": True}
-    mock_get.return_value.json.return_value = mock_response
-    mock_get.return_value.raise_for_status.return_value = None
+    mock_response = {
+        "success": True,
+        "result": 905.0  # 10 USD * 90.5 RUB/USD
+    }
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.json.return_value = mock_response
+        mock_get.return_value.raise_for_status.return_value = None
 
-    transaction = {"amount": 10, "currency": "USD"}
-    result = convert_to_rub(transaction)
-    assert result == 905.0
+        transaction = {"amount": 10, "currency": "USD"}
+        result = convert_to_rub(transaction)
+
+        assert result == 905.0
+        mock_get.assert_called_once()
 
 def test_convert_to_rub_rub() -> None:
     transaction = {"amount": 1000, "currency": "RUB"}

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Загружаем переменные из .env
 
 API_KEY = os.getenv("API_KEY")
-BASE_URL = "https://api.apilayer.com/exchangerates_data/latest"
+BASE_URL = "https://api.apilayer.com/exchangerates_data/convert"
 
 
 def load_transactions(file_path: Union[str, Path]) -> List[Dict]:
@@ -25,19 +25,27 @@ def load_transactions(file_path: Union[str, Path]) -> List[Dict]:
 
 
 def convert_to_rub(transaction: Dict[str, Any]) -> float:
-    """Конвертирует сумму транзакции в рубли по текущему курсу."""
-    amount = float(cast(float, transaction.get("amount", 0)))
+    """Конвертирует сумму транзакции в рубли через API."""
+    amount = transaction.get("amount", 0)
     currency = transaction.get("currency", "RUB").upper()
 
     if currency == "RUB":
         return float(amount)
 
-    # Запрос к API для получения курса
-    response = requests.get(
-        BASE_URL,
-        params={"base": currency, "symbols": "RUB"},
-        headers={"apikey": API_KEY}
-    )
-    response.raise_for_status()
-    rate = cast(float, response.json()["rates"]["RUB"])
-    return amount * rate
+    try:
+        response = requests.get(
+            BASE_URL,
+            params={
+                "to": "RUB",
+                "from": currency,
+                "amount": amount
+            },
+            headers={"apikey": API_KEY},
+            timeout=10
+        )
+        response.raise_for_status()
+        result = response.json()
+        return float(result["result"])  # Ключ "result" содержит итоговую сумму
+    except (requests.RequestException, KeyError, ValueError) as e:
+        print(f"Ошибка конвертации: {e}")
+        return 0.0
