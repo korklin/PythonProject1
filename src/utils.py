@@ -18,7 +18,7 @@ def setup_logging() -> None:
     log_file = logs_dir / f"transactions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.FileHandler(log_file, mode="w"),  # 'w' для перезаписи при каждом запуске
