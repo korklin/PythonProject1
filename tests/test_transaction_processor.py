@@ -6,6 +6,7 @@ from src.transaction_processor import read_csv_transactions, read_xlsx_transacti
 
 CSV_CONTENT = "id;date;amount;currency_name;state\n1;2023-01-01T10:00:00Z;1000;USD;done\n"
 
+
 def test_read_csv_transactions() -> None:
     with patch("builtins.open", mock_open(read_data=CSV_CONTENT)):
         transactions = read_csv_transactions("fake_path.csv")
@@ -22,10 +23,7 @@ def test_read_xlsx_transactions() -> None:
     mock_sheet = MagicMock()
     mock_sheet.__getitem__.return_value = [MagicMock(value="id"), MagicMock(value="date"), MagicMock(value="amount")]
 
-    mock_sheet.iter_rows.return_value = [
-        ("1", "2023-01-01T10:00:00Z", 1000),
-        (None, None, None)  # Пропускается
-    ]
+    mock_sheet.iter_rows.return_value = [("1", "2023-01-01T10:00:00Z", 1000), (None, None, None)]  # Пропускается
 
     mock_workbook = MagicMock()
     mock_workbook.__getitem__.return_value = mock_sheet
@@ -57,4 +55,3 @@ def test_process_transactions_prints_correctly() -> None:
     assert any("USD: 2" in c for c in calls)
     assert any("EUR: 1" in c for c in calls)
     assert any("Самые крупные транзакции" in c for c in calls)
-
