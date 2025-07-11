@@ -1,7 +1,14 @@
 import csv
 import openpyxl
-from datetime import datetime
-from typing import List, Dict, Union
+import logging
+from datetime import datetime, date, time
+from typing import List, Dict, Union, Optional, Any, cast
+from openpyxl.worksheet.worksheet import Worksheet
+#from mypy.typeshed.stdlib.decimal import Decimal # type: ignore
+
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 def read_csv_transactions(file_path: str) -> List[Dict[str, Union[str, int, datetime]]]:
@@ -31,50 +38,118 @@ def read_csv_transactions(file_path: str) -> List[Dict[str, Union[str, int, date
 
     return transactions
 
+def read_xlsx_transactions(
+        file_path: str, sheet_name: Optional[str] = None
+) -> List[Dict[str, Union[str, int, datetime, None]]]:
 
-def read_xlsx_transactions(file_path: str, sheet_name: str = None) -> List[Dict[str, Union[str, int, datetime]]]:
-    """
-    Чтение транзакций из XLSX файла
-    """
-    transactions = []
+    transactions: List[Dict[str, Any]] = []
 
-    # Загружаем книгу Excel
     workbook = openpyxl.load_workbook(file_path)
 
-    # Выбираем лист (если не указан, берем первый)
-    sheet = workbook[sheet_name] if sheet_name else workbook.active
+     # Получение листа
+    sheet: Optional[Worksheet] = None
+    if sheet_name:
+        if sheet_name in workbook.sheetnames:
+            sheet = workbook[sheet_name]
+        else:
+            logger.warning(f"Лист с именем '{sheet_name}' не найден в файле {file_path}.")
+            return transactions  # Возвращаем пустой список
+    else:
+        sheet = workbook.active
 
-    # Получаем заголовки из первой строки
-    headers = [cell.value for cell in sheet[1]]
+    if sheet is None:
+        logger.warning(f"Не удалось получить активный лист из файла {file_path}.")
+        return transactions
 
-    # Обрабатываем строки, начиная со второй
+    headers = [str(cell.value) if cell.value is not None else "" for cell in sheet[1]]
+
     for row in sheet.iter_rows(min_row=2, values_only=True):
         transaction = dict(zip(headers, row))
 
-        # Пропускаем пустые строки
         if not transaction.get('id'):
             continue
 
-        # Преобразуем дату
-        if isinstance(transaction['date'], str):
+        # Обработка даты
+        date_val = transaction.get('date')
+        if isinstance(date_val, str):
             try:
-                transaction['date'] = datetime.strptime(transaction['date'], '%Y-%m-%dT%H:%M:%SZ')
+                transaction['date'] = datetime.strptime(date_val, '%Y-%m-%dT%H:%M:%SZ')
             except ValueError:
+                logger.debug(f"Неверный формат даты: {date_val}")
                 transaction['date'] = None
-        elif isinstance(transaction['date'], datetime):
-            pass  # Уже в правильном формате
-        else:
+        elif not isinstance(date_val, datetime):
             transaction['date'] = None
-
-        # Преобразуем amount в число
-        try:
-            transaction['amount'] = int(transaction['amount'])
-        except (ValueError, TypeError):
-            transaction['amount'] = 0
 
         transactions.append(transaction)
 
     return transactions
+# def read_xlsx_transactions(
+#     file_path: str, sheet_name: Optional[str] = None
+# ) -> List[Dict[str, Union[str, int, datetime, None]]]:
+#
+#     transactions = []
+#
+#     workbook = openpyxl.load_workbook(file_path)
+#     sheet = workbook[sheet_name] if sheet_name else workbook.active
+#
+#     headers = [str(cell.value) if cell.value is not None else "" for cell in sheet[1]]
+#
+#     for row in sheet.iter_rows(min_row=2, values_only=True):
+#         transaction = dict(zip(headers, row))
+#
+#         if not transaction.get('id'):
+#             continue
+#
+#         # Обработка даты
+#         date_val = transaction.get('date')
+#         if isinstance(date_val, str):
+#             try:
+#                 transaction['date'] = datetime.strptime(date_val, '%Y-%m-%dT%H:%M:%SZ')
+#             except ValueError:
+#                 transaction['date'] = None
+#         elif isinstance(date_val, datetime):
+#             pass
+#         else:
+#             transaction['date'] = None
+
+        # Обработка amount с явной проверкой типов
+        # amount_val = transaction.get('amount')
+        # if isinstance(amount_val, (int, float, Decimal, bool)):
+        #     transaction['amount'] = int(amount_val)
+        # elif isinstance(amount_val, str):
+        #     try:
+        #         transaction['amount'] = int(amount_val)
+        #     except ValueError:
+        #         transaction['amount'] = 0
+        # else:
+        #     transaction['amount'] = 0
+# amount_val = transaction.get('amount')
+#
+# if isinstance(amount_val, (int, float, bool)):
+#     transaction['amount'] = int(amount_val)
+# elif isinstance(amount_val, str):
+#     try:
+#         transaction['amount'] = int(float(amount_val))  # сначала в float, затем в int
+#     except ValueError:
+#         transaction['amount'] = 0
+# else:
+#     transaction['amount'] = 0
+#
+#         # Приведение остальных значений к str | int | datetime | None
+#         for key, val in transaction.items():
+#             if key in ('date', 'amount'):
+#                 continue  # уже обработаны
+#             if val is None:
+#                 transaction[key] = ""
+#             elif isinstance(val, (str, int, datetime)):
+#                 pass  # оставляем как есть
+#             else:
+#                 # Для прочих типов, например CellRichText, date, time и т.д. — преобразуем в строку
+#                 transaction[key] = str(val)
+#
+#         transactions.append(transaction)
+#
+#     return transactions
 
 
 def process_transactions(transactions: List[Dict]) -> None:
@@ -87,7 +162,7 @@ def process_transactions(transactions: List[Dict]) -> None:
         return
 
     # Статистика по статусам
-    status_counts = {}
+    status_counts: Dict[str, int] = {}
     for t in transactions:
         status = t.get('state', 'UNKNOWN')
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -97,7 +172,7 @@ def process_transactions(transactions: List[Dict]) -> None:
         print(f"{status}: {count}")
 
     # Топ-5 валют по количеству транзакций
-    currency_counts = {}
+    currency_counts: Dict[str, int] = {}
     for t in transactions:
         currency = t.get('currency_name', 'UNKNOWN')
         currency_counts[currency] = currency_counts.get(currency, 0) + 1
@@ -116,7 +191,7 @@ def process_transactions(transactions: List[Dict]) -> None:
         print(f"ID: {t['id']}, Дата: {t['date']}, Валюта: {t['currency_name']}")
 
 
-def main():
+def main() -> None:
     # Обработка CSV файла
     print("Обработка CSV файла...")
     csv_transactions = read_csv_transactions('transactions.csv')
