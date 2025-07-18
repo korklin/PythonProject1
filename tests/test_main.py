@@ -1,132 +1,331 @@
-import pytest
-from unittest.mock import mock_open, patch, MagicMock
+import csv
+import json
 from datetime import datetime
-from src.main import filter_transactions_by_status, sort_transactions, filter_rub, read_csv_transactions, read_xlsx_transactions, process_transactions
-from io import StringIO
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from typing import Dict, List, Any
+
+import openpyxl
+import pytest
+from _pytest.capture import CaptureFixture
+from _pytest.monkeypatch import MonkeyPatch
+from _pytest.tmpdir import tmp_path
+
+from src.main import (filter_rub, filter_transactions_by_status, print_transaction, process_transactions,
+                      read_csv_transactions, read_json_transactions, read_xlsx_transactions, sort_transactions)
 
 
-CSV_CONTENT = "id;date;amount;currency_name;state\n1;2023-01-01T10:00:00Z;1000;USD;done\n"
-
-
-def test_read_csv_transactions() -> None:
-    with patch("builtins.open", mock_open(read_data=CSV_CONTENT)):
-        transactions = read_csv_transactions("fake_path.csv")
-
-    assert len(transactions) == 1
-    assert transactions[0]["id"] == "1"
-    assert transactions[0]["amount"] == 1000
-    assert transactions[0]["currency_name"] == "USD"
-    assert transactions[0]["state"] == "done"
-    assert isinstance(transactions[0]["date"], datetime)
-
-
-def test_read_xlsx_transactions() -> None:
-    mock_sheet = MagicMock()
-    mock_sheet.__getitem__.return_value = [MagicMock(value="id"), MagicMock(value="date"), MagicMock(value="amount")]
-
-    mock_sheet.iter_rows.return_value = [("1", "2023-01-01T10:00:00Z", 1000), (None, None, None)]  # Пропускается
-
-    mock_workbook = MagicMock()
-    mock_workbook.__getitem__.return_value = mock_sheet
-    mock_workbook.active = mock_sheet
-
-    with patch("openpyxl.load_workbook", return_value=mock_workbook):
-        transactions = read_xlsx_transactions("fake.xlsx")
-
-    assert len(transactions) == 1
-    assert transactions[0]["id"] == "1"
-    assert transactions[0]["amount"] == 1000
-    assert isinstance(transactions[0]["date"], datetime)
-
-
-def test_process_transactions_prints_correctly() -> None:
-    sample_transactions = [
-        {"id": "1", "amount": 100, "state": "done", "currency_name": "USD", "date": datetime.now()},
-        {"id": "2", "amount": 200, "state": "pending", "currency_name": "USD", "date": datetime.now()},
-        {"id": "3", "amount": 200, "state": "done", "currency_name": "EUR", "date": datetime.now()},
+# Фикстуры для тестовых данных
+@pytest.fixture
+def sample_transactions() -> List[Dict[str, Any]]:
+    return [
+        {"id": 1, "date": datetime(2023, 1, 1), "amount": 100, "currency_name": "руб.", "state": "EXECUTED"},
+        {"id": 2, "date": datetime(2023, 1, 2), "amount": 200, "currency_name": "USD", "state": "CANCELED"},
+        {"id": 3, "date": datetime(2023, 1, 3), "amount": 300, "currency_name": "руб.", "state": "PENDING"},
     ]
 
-    with patch("builtins.print") as mock_print:
-        process_transactions(sample_transactions)
 
-    # Проверяем, что вызвался print с правильными строками
-    calls = [call.args[0] for call in mock_print.call_args_list]
-    assert "Всего транзакций: 3" in calls
-    assert any("done: 2" in c for c in calls)
-    assert any("USD: 2" in c for c in calls)
-    assert any("EUR: 1" in c for c in calls)
-    assert any("Самые крупные транзакции" in c for c in calls)
-
-
-def test_filter_by_status(sample_transactions=None):
-    result = filter_transactions_by_status(sample_transactions, "EXECUTED")
-    assert len(result) == 2
-    assert all(t["state"] == "EXECUTED" for t in result)
+@pytest.fixture
+def sample_csv_file(sample_transactions: list[dict]) -> str:
+    with NamedTemporaryFile(mode="w+", suffix=".csv", delete=False, encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["id", "date", "amount", "currency_name", "state"], delimiter=";")
+        writer.writeheader()
+        for t in sample_transactions:
+            row = t.copy()
+            row["date"] = row["date"].strftime("%Y-%m-%dT%H:%M:%SZ")
+            writer.writerow(row)
+        return f.name
 
 
-def test_sort_transactions(sample_transactions=None):
-    tx = sample_transactions.copy()
-    tx[0]["date"] = None
-    tx[1]["date"] = "2023-05-01T10:00:00Z"
-    tx[2]["date"] = "2023-01-01T09:00:00Z"
-    tx[3]["date"] = "2023-12-01T08:00:00Z"
-    from datetime import datetime
-    tx[1]["date"] = datetime.strptime(tx[1]["date"], "%Y-%m-%dT%H:%M:%SZ")
-    tx[2]["date"] = datetime.strptime(tx[2]["date"], "%Y-%m-%dT%H:%M:%SZ")
-    tx[3]["date"] = datetime.strptime(tx[3]["date"], "%Y-%m-%dT%H:%M:%SZ")
-
-    sorted_tx = sort_transactions(tx, ascending=True)
-    assert sorted_tx[0]["date"].year == 2023
-    assert sorted_tx[-1]["date"].year == 2023
+@pytest.fixture
+def sample_json_file(sample_transactions: list[dict]) -> str:
+    with NamedTemporaryFile(mode="w+", suffix=".json", delete=False, encoding="utf-8") as f:
+        json.dump(sample_transactions, f, default=str)
+        return f.name
 
 
-def test_filter_rub(sample_transactions=None):
-    rub_tx = filter_rub(sample_transactions)
-    assert len(rub_tx) == 3
-    assert all(t["currency_name"].lower() == "руб." for t in rub_tx)
+@pytest.fixture
+def sample_xlsx_file(sample_transactions: list[dict]) -> str:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Transactions"
+    ws.append(["id", "date", "amount", "currency_name", "state"])
+    for t in sample_transactions:
+        ws.append([t["id"], t["date"].strftime("%Y-%m-%dT%H:%M:%SZ"), t["amount"], t["currency_name"], t["state"]])
+
+    with NamedTemporaryFile(mode="wb+", suffix=".xlsx", delete=False) as f:
+        wb.save(f.name)
+        return f.name
 
 
-# Примерные транзакции
-transactions_test = [
-    {"description": "Открытие вклада", "state": "EXECUTED", "currency_name": "руб.", "date": None, "amount": 5000},
-    {"description": "Перевод", "state": "CANCELED", "currency_name": "usd", "date": None, "amount": 1000},
-    {"description": "Оплата телефона", "state": "EXECUTED", "currency_name": "руб.", "date": None, "amount": 300},
-]
+# Тесты функций чтения файлов
+def test_read_csv_transactions(sample_csv_file: str, sample_transactions: list[dict]) -> None:
+    transactions = read_csv_transactions(sample_csv_file)
+    assert len(transactions) == 3
+    assert transactions[0]["id"] == "1"
+    assert transactions[0]["amount"] == 100
+    assert transactions[0]["currency_name"] == "руб."
 
 
-def test_process_transactions_executed_rub_filter_and_search():
-    user_inputs = [
-        "EXECUTED",     # фильтр по статусу
-        "нет",          # сортировка по дате
-        "да",           # только рублевые
-        "да",           # фильтр по описанию
-        "вклад",        # ключевое слово
-        "нет"           # подсчет категорий
-    ]
+def test_read_json_transactions(sample_json_file: str, sample_transactions: list[dict], transactions: list) -> None:
+    transactions = read_json_transactions(sample_json_file)
+    assert len(transactions) == 3
+    assert transactions[0]["id"] == 1
+    assert transactions[0]["amount"] == 100
 
-    with patch("builtins.input", side_effect=user_inputs):
-        with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
-            process_transactions(transactions_test)
 
-            output = mock_stdout.getvalue()
+def test_read_xlsx_transactions(sample_xlsx_file: str, sample_transactions: list[dict]) -> None:
+    transactions = read_xlsx_transactions(sample_xlsx_file)
+    assert len(transactions) == 3
+    assert transactions[0]["id"] == 1
+    assert transactions[0]["amount"] == 100
 
-            # Проверки:
-            assert "Операции отфильтрованы по статусу: EXECUTED" in output
-            assert "Всего банковских операций в выборке: 1" in output
-            assert "Открытие вклада" in output
 
-def test_process_transactions_nothing_found():
-        user_inputs = [
+# Тесты функций обработки транзакций
+def test_filter_transactions_by_status(sample_transactions: list[dict]) -> None:
+    executed = filter_transactions_by_status(sample_transactions, "EXECUTED")
+    assert len(executed) == 1
+    assert executed[0]["state"] == "EXECUTED"
+
+
+def test_sort_transactions(sample_transactions: list[dict]) -> None:
+    sorted_asc = sort_transactions(sample_transactions, ascending=True)
+    assert sorted_asc[0]["id"] == 1
+    assert sorted_asc[-1]["id"] == 3
+
+    sorted_desc = sort_transactions(sample_transactions, ascending=False)
+    assert sorted_desc[0]["id"] == 3
+    assert sorted_desc[-1]["id"] == 1
+
+
+def test_filter_rub(sample_transactions: list[dict]) -> None:
+    rub_transactions = filter_rub(sample_transactions)
+    assert len(rub_transactions) == 2
+    assert all(t["currency_name"] == "руб." for t in rub_transactions)
+
+
+def test_print_transaction(capsys: pytest.CaptureFixture[str], sample_transactions: list[dict]) -> None:
+    print_transaction(sample_transactions[0])
+    captured = capsys.readouterr()
+    assert "01.01.2023" in captured.out
+    assert "100 руб." in captured.out
+
+
+# Интеграционный тест
+def test_process_transactions(
+    capsys: pytest.CaptureFixture[str], sample_transactions: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Мокаем ввод пользователя
+    inputs = iter(
+        [
             "EXECUTED",  # статус
-            "нет",  # сортировка
-            "да",  # только рублевые
-            "да",  # поиск
-            "неизвестное",  # ключ
-            "нет"  # категории
+            "да",  # сортировать?
+            "возрастанию",  # направление
+            "нет",  # только рубли?
+            "нет",  # фильтр по описанию?
+            "нет",  # подсчет категорий?
         ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
-        with patch("builtins.input", side_effect=user_inputs):
-            with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
-                process_transactions(transactions_test)
-                output = mock_stdout.getvalue()
-                assert "Не найдено ни одной транзакции" in output
+    process_transactions(sample_transactions)
+    captured = capsys.readouterr()
+    assert "Распечатываю итоговый список транзакций" in captured.out
+    assert "Всего банковских операций в выборке: 1" in captured.out
+
+
+# Тест на пустые данные
+def test_empty_transactions(capsys: pytest.CaptureFixture[str]) -> None:
+    process_transactions([])
+    captured = capsys.readouterr()
+    assert "Список транзакций пуст." in captured.out
+
+
+# Пропущенные значения в amount или date
+def test_read_csv_missing_fields(tmp_path: Any) -> None:
+    csv_path = tmp_path / "missing.csv"
+    csv_path.write_text("id;date;amount;currency_name;state\n1;;not_a_number;руб.;EXECUTED", encoding="utf-8")
+
+    transactions: List[Dict[str, Any]] = read_csv_transactions(str(csv_path))
+    assert transactions[0]["amount"] == 0
+    assert transactions[0]["date"] is None
+
+
+# Фильтрация по статусу с пробелами и регистром
+def test_filter_transactions_case_insensitive(sample_transactions: List[Dict[str, Any]]) -> None:
+    result = filter_transactions_by_status(sample_transactions, " EXECUTED ")
+    assert len(result) == 1
+
+
+# Ошибка при чтении JSON
+def test_read_json_invalid(tmp_path: Any) -> None:
+    bad_path = tmp_path / "bad.json"
+    bad_path.write_text("{ invalid json", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError):
+        read_json_transactions(str(bad_path))
+
+# C разными вариантами написания
+def test_filter_rub_variants() -> None:
+    txs = [{"currency_name": " РУБ. "}, {"currency_name": "usd"}, {"currency_name": "Руб."}]
+    filtered = filter_rub(txs)
+    assert len(filtered) == 2
+
+
+# Нет совпадений после фильтрации
+def test_process_transactions_no_match(monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], sample_transactions: List[Dict[str, Any]]) -> None:
+    inputs = iter([
+        "EXECUTED",
+        "нет",  # сортировка
+        "да",   # фильтр по валюте
+        "да",   # фильтр по описанию
+        "несуществующее_слово",
+    ])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    process_transactions(sample_transactions)
+    out = capsys.readouterr().out
+    assert "Не найдено ни одной транзакции" in out
+
+# Транзакции без даты
+def test_sort_transactions_with_missing_date(sample_transactions: List[Dict[str, Any]]) -> None:
+    sample_transactions[0]["date"] = None
+    sorted_tx = sort_transactions(sample_transactions)
+    assert sorted_tx[0]["date"] is None  # должна идти первой
+
+
+# Параметризованный тест для filter_transactions_by_status
+@pytest.mark.parametrize(
+    "status_input, expected_ids",
+    [
+        ("EXECUTED", [1]),
+        ("executed", [1]),
+        ("  executed  ", [1]),
+        ("CANCELED", [2]),
+        ("pending", [3]),
+        ("PENDING ", [3]),
+        ("nonexistent", []),
+        ("", []),
+        ("   ", []),
+    ]
+)
+def test_filter_transactions_by_status_parametrized(
+    sample_transactions: List[Dict[str, Any]],
+    status_input: str,
+    expected_ids: List[int]
+) -> None:
+    result = filter_transactions_by_status(sample_transactions, status_input)
+    result_ids = [t["id"] for t in result]
+    assert result_ids == expected_ids
+
+
+# Параметризованный тест для sort_transactions
+@pytest.fixture
+def unsorted_transactions() -> List[Dict[str, Any]]:
+    return [
+        {"id": 3, "date": datetime(2023, 1, 3)},
+        {"id": 1, "date": datetime(2023, 1, 1)},
+        {"id": 2, "date": datetime(2023, 1, 2)},
+    ]
+
+@pytest.mark.parametrize(
+    "ascending, expected_order",
+    [
+        (True, [1, 2, 3]),
+        (False, [3, 2, 1]),
+    ]
+)
+def test_sort_transactions_parametrized(
+    unsorted_transactions: List[Dict[str, Any]],
+    ascending: bool,
+    expected_order: List[int]
+) -> None:
+    sorted_tx = sort_transactions(unsorted_transactions, ascending=ascending)
+    result_ids = [t["id"] for t in sorted_tx]
+    assert result_ids == expected_order
+
+
+# Параметризованный тест для filter_rub
+@pytest.mark.parametrize(
+    "transactions, expected_ids",
+    [
+        (
+            [
+                {"id": 1, "currency_name": "руб."},
+                {"id": 2, "currency_name": "usd"},
+                {"id": 3, "currency_name": "РУБ."},
+                {"id": 4, "currency_name": "  руб.  "},
+            ],
+            [1, 3, 4]
+        ),
+        (
+            [
+                {"id": 5, "currency_name": "euro"},
+                {"id": 6, "currency_name": "rub"},  # нет точки
+            ],
+            []
+        )
+    ]
+)
+def test_filter_rub_parametrized(transactions: List[Dict[str, Any]], expected_ids: List[int]) -> None:
+    result = filter_rub(transactions)
+    result_ids = [t["id"] for t in result]
+    assert result_ids == expected_ids
+
+# Некорректный путь к файлу
+def test_read_json_file_not_found() -> None:
+    with pytest.raises(FileNotFoundError):
+        read_json_transactions("nonexistent_file.json")
+
+
+# Тест на ввод некорректного статуса в process_transactions
+def test_process_transactions_invalid_status(monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], sample_transactions: List[Dict[str, Any]]) -> None:
+    inputs = iter([
+        "WRONG",  # неверный статус
+        "CANCELED",  # корректный
+        "нет", "нет", "нет", "нет"
+    ])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    process_transactions(sample_transactions)
+    out = capsys.readouterr().out
+    assert "Статус 'WRONG' недопустим" in out
+    assert "Операции отфильтрованы по статусу: CANCELED" in out
+
+
+def test_read_xlsx_invalid_date_handling(tmp_path: Path) -> None:
+    path = tmp_path / "bad_date.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Sheet1"
+    ws.append(["id", "date", "amount", "currency_name", "state"])
+    ws.append([1, "invalid_date", "100", "руб.", "EXECUTED"])
+    wb.save(path)
+
+    result = read_xlsx_transactions(str(path))
+    assert result[0]["date"] is None
+
+
+def test_process_transactions_with_categories(monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], sample_transactions: List[Dict[str, Any]]) -> None:
+    inputs = iter([
+        "EXECUTED",
+        "нет", "нет", "нет",  # сортировка, рубли, описание
+        "да",
+        "вклад, перевод"
+    ])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    process_transactions(sample_transactions)
+    out = capsys.readouterr().out
+    assert "Операции по категориям" in out
+
+def test_read_csv_extra_columns(tmp_path: Path) -> None:
+    path = tmp_path / "extra.csv"
+    path.write_text(
+        "state;id;amount;currency_name;date;extra\n"
+        "EXECUTED;1;100;руб.;2023-01-01T00:00:00Z;ignored",
+        encoding="utf-8"
+    )
+    transactions = read_csv_transactions(str(path))
+    assert transactions[0]["id"] == "1"
+    assert transactions[0]["amount"] == 100
+    assert "extra" in transactions[0]

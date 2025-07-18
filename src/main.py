@@ -1,12 +1,13 @@
 import csv
 import json
-import openpyxl
 import logging
 from datetime import datetime
-from typing import List, Dict, Union, Optional, Any
+from typing import Any, Dict, List, Optional, Union
+
+import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
-from bank_utils import process_bank_search, process_bank_operations
-from collections import Counter
+
+from src.bank_utils import process_bank_operations, process_bank_search
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -29,46 +30,69 @@ def read_csv_transactions(file_path: str) -> List[Dict[str, Union[str, int, date
     return transactions
 
 
-def read_xlsx_transactions(file_path: str, sheet_name: Optional[str] = None) -> List[Dict[str, Union[str, int, datetime]]]:
-    transactions: List[Dict[str, Any]] = []
-    workbook = openpyxl.load_workbook(file_path)
-    sheet: Worksheet = workbook[sheet_name] if sheet_name and sheet_name in workbook.sheetnames else workbook.active
-    headers = [str(cell.value) if cell.value else "" for cell in sheet[1]]
+def read_xlsx_transactions(file_path: str, sheet_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Чтение транзакций из XLSX с минимальной строгой типизацией"""
+    transactions = []
 
-    for row in sheet.iter_rows(min_row=2, values_only=True):
-        transaction = dict(zip(headers, row))
-        if not transaction.get("id"):
-            continue
-        date_val = transaction.get("date")
-        if isinstance(date_val, str):
+    try:
+        # 1. Загрузка книги (без строгой типизации)
+        workbook = openpyxl.load_workbook(file_path)
+
+        # 2. Получение листа (прагматичный подход)
+        sheet = None
+        if sheet_name:
+            if sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]  # type: ignore
+        if sheet is None:
+            sheet = workbook.active
+
+        # 3. Проверка что это действительно Worksheet
+        if not isinstance(sheet, Worksheet):
+            raise ValueError("Unsupported sheet type")
+
+        # 4. Чтение данных (прагматичная обработка)
+        headers = [str(cell.value) if cell.value else f"col_{i + 1}" for i, cell in enumerate(sheet[1])]
+
+        for row in sheet.iter_rows(min_row=2, values_only=True):
             try:
-                transaction["date"] = datetime.strptime(date_val, "%Y-%m-%dT%H:%M:%SZ")
-            except ValueError:
-                transaction["date"] = None
-        elif not isinstance(date_val, datetime):
-            transaction["date"] = None
-        transactions.append(transaction)
+                transaction = dict(zip(headers, row))
+                if not transaction.get("id"):
+                    continue
+
+                # Преобразование даты
+                if "date" in transaction:
+                    if isinstance(transaction["date"], str):
+                        try:
+                            transaction["date"] = datetime.strptime(transaction["date"], "%Y-%m-%dT%H:%M:%SZ")
+                        except ValueError:
+                            transaction["date"] = None
+                    elif not isinstance(transaction["date"], datetime):
+                        transaction["date"] = None
+
+                transactions.append(transaction)
+            except Exception as row_error:
+                logger.warning(f"Row processing error: {row_error}")
+                continue
+
+    except Exception as e:
+        logger.error(f"XLSX read failed: {e}")
+        raise
+
     return transactions
 
 
-def read_json_transactions(file_path: str) -> List[Dict[str, Any]]:
+def read_json_transactions(file_path: str) -> Any:
     with open(file_path, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
 def filter_transactions_by_status(transactions: List[Dict], status: str) -> List[Dict]:
-    return [
-        t for t in transactions
-        if t.get("state", "").strip().upper() == status.upper()
-    ]
+    status_clean = status.strip().upper()
+    return [t for t in transactions if t.get("state", "").strip().upper() == status_clean]
 
 
 def sort_transactions(transactions: List[Dict], ascending: bool = True) -> List[Dict]:
-    return sorted(
-        transactions,
-        key=lambda t: t.get("date") or datetime.min,
-        reverse=not ascending
-    )
+    return sorted(transactions, key=lambda t: t.get("date") or datetime.min, reverse=not ascending)
 
 
 def filter_rub(transactions: List[Dict]) -> List[Dict]:
@@ -184,4 +208,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
